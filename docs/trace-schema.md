@@ -53,3 +53,15 @@ event IDs in the same trace. Uploads are limited to 300 KB and 250 events.
 
 Forkpoint analyzes explicit events and observable actions. It does not request,
 store, or expose private chain-of-thought.
+
+## Non-demo example
+
+[`examples/ci-pnpm-frozen-lockfile.json`](../examples/ci-pnpm-frozen-lockfile.json)
+is a realistic custom trace for testing the GPT-backed analysis path. It follows
+an agent that assumes npm in a pnpm TypeScript monorepo, creates a competing
+lockfile, changes CI commands, overlooks contradictory package-manager
+evidence, and ends with a protected `--frozen-lockfile` failure.
+
+This example has no deterministic Demo Analysis result. Without
+`OPENAI_API_KEY`, Forkpoint should accept and normalize the JSON, then report
+that an API key is required for custom trace analysis.

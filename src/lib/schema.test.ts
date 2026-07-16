@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { demoAnalysis, demoTrace } from "@/lib/demo";
+import pnpmCiTrace from "../../examples/ci-pnpm-frozen-lockfile.json";
 import {
   normalizeTrace,
   validateAnalysisForTrace,
@@ -11,6 +12,14 @@ describe("trace validation", () => {
     const normalized = normalizeTrace(reversed);
     expect(normalized.events[0]?.id).toBe("event-1");
     expect(normalized.events.at(-1)?.id).toBe("event-11");
+  });
+
+  it("accepts the non-demo pnpm frozen-lockfile example", () => {
+    const normalized = normalizeTrace(pnpmCiTrace);
+    expect(normalized.traceId).toBe("ci-pnpm-frozen-lockfile");
+    expect(normalized.events).toHaveLength(20);
+    expect(normalized.events[0]?.type).toBe("user_request");
+    expect(normalized.events.at(-1)?.type).toBe("final_result");
   });
 
   it("rejects duplicate event ids", () => {
