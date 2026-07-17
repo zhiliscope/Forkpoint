@@ -36,6 +36,7 @@ import {
   type Analysis,
   type TraceEvent,
 } from "@/lib/schema";
+import { getTracePresentation } from "@/lib/trace-presentation";
 
 type AnalysisMode = "demo" | "gpt";
 type Verification = {
@@ -220,6 +221,10 @@ export function ForkpointWorkspace() {
   const fileInput = useRef<HTMLInputElement>(null);
 
   const selectedEvent = trace?.events.find((event) => event.id === selectedId) ?? null;
+  const presentation = useMemo(
+    () => (trace ? getTracePresentation(trace) : null),
+    [trace],
+  );
   const graph = useMemo(
     () =>
       trace && analysis
@@ -299,7 +304,7 @@ export function ForkpointWorkspace() {
   }
 
   async function runVerification() {
-    if (!trace) return;
+    if (!trace || !presentation?.verificationAvailable) return;
     setLoading("verify");
     setError(null);
     try {
@@ -594,10 +599,12 @@ export function ForkpointWorkspace() {
             <section className="branch-section">
               <div className="branch-heading">
                 <div>
-                  <span className="panel-kicker">TIME-TRAVEL REPLAY</span>
-                  <h2>Branch from the Forkpoint</h2>
+                  <span className="panel-kicker">{presentation?.sectionKicker}</span>
+                  <h2>{presentation?.sectionTitle}</h2>
                 </div>
-                <span className="scope-badge"><ShieldCheck size={14} /> Constrained demo replay</span>
+                <span className="scope-badge">
+                  <ShieldCheck size={14} /> {presentation?.scopeLabel}
+                </span>
               </div>
 
               <div className="correction-row">
@@ -619,11 +626,15 @@ export function ForkpointWorkspace() {
                 <button
                   className="verify-button"
                   onClick={runVerification}
-                  disabled={loading !== null || trace.traceId !== "demo-next-router"}
-                  title={trace.traceId !== "demo-next-router" ? "Verification is constrained to the built-in demo." : undefined}
+                  disabled={loading !== null || !presentation?.verificationAvailable}
+                  title={
+                    presentation?.verificationAvailable
+                      ? undefined
+                      : "Safe verification is available only for the built-in fixture."
+                  }
                 >
                   {loading === "verify" ? <LoaderCircle className="spin" size={16} /> : <Play size={16} fill="currentColor" />}
-                  Run safe verification
+                  {presentation?.verificationButtonLabel}
                 </button>
               </div>
 
@@ -631,7 +642,7 @@ export function ForkpointWorkspace() {
                 <article className="branch-card original-branch">
                   <header>
                     <span className="branch-icon fail"><X size={16} /></span>
-                    <div><span>ORIGINAL BRANCH</span><h3>React Router path</h3></div>
+                    <div><span>ORIGINAL BRANCH</span><h3>{presentation?.originalBranchLabel}</h3></div>
                     <span className="branch-status failed">FAILED</span>
                   </header>
                   <ol>
@@ -651,9 +662,13 @@ export function ForkpointWorkspace() {
                 <article className="branch-card corrected-branch">
                   <header>
                     <span className="branch-icon pass"><GitBranch size={16} /></span>
-                    <div><span>CORRECTED BRANCH</span><h3>Next.js App Router path</h3></div>
+                    <div><span>CORRECTED BRANCH</span><h3>{presentation?.correctedBranchLabel}</h3></div>
                     <span className={`branch-status ${verification?.passed ? "passed" : "pending"}`}>
-                      {verification?.passed ? "VERIFIED" : "READY"}
+                      {verification?.passed
+                        ? "VERIFIED"
+                        : presentation?.verificationAvailable
+                          ? "READY"
+                          : "PLAN READY"}
                     </span>
                   </header>
                   <ol>
@@ -667,6 +682,8 @@ export function ForkpointWorkspace() {
                   <footer className={verification?.passed ? "verified-footer" : ""}>
                     {verification?.passed ? (
                       <><Check size={15} /> {verification.output}</>
+                    ) : !presentation?.verificationAvailable ? (
+                      <>Suggested verification: {analysis.verificationSuggestion}</>
                     ) : (
                       analysis.verificationSuggestion
                     )}

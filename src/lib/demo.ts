@@ -102,6 +102,23 @@ export const demoTrace: AgentTrace = {
   },
 };
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+export function isBuiltInDemoTrace(trace: AgentTrace) {
+  return canonicalJson(trace) === canonicalJson(demoTrace);
+}
+
 export const demoAnalysis: Analysis = {
   summary:
     "The execution diverged before any file edit: it inferred React Router from an ambiguous component and skipped the repository signals that identify Next.js App Router.",
