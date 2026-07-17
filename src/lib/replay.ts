@@ -1,11 +1,12 @@
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const PROJECT_ROOT = process.cwd();
 const FIXTURE_ROOT = path.resolve(PROJECT_ROOT, "demo/demo-app");
-const RUNS_ROOT = path.resolve(PROJECT_ROOT, ".forkpoint-runs");
+const RUNS_ROOT = path.resolve(tmpdir(), "forkpoint-runs");
 
 function assertInside(parent: string, candidate: string) {
   const relative = path.relative(parent, candidate);
