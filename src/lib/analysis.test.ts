@@ -22,4 +22,15 @@ describe("analyzeTrace demo safeguard", () => {
     ).rejects.toThrow("must use the alternative plan returned");
     expect(OpenAIClient).not.toHaveBeenCalled();
   });
+
+  it("generates the built-in branch deterministically without OpenAI", async () => {
+    const result = await generateAlternativePlan(
+      demoTrace,
+      "This project uses Next.js App Router.",
+    );
+
+    expect(result.mode).toBe("demo");
+    expect(result.plan).toHaveLength(5);
+    expect(OpenAIClient).not.toHaveBeenCalled();
+  });
 });

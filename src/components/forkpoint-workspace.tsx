@@ -35,6 +35,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { demoTrace, isBuiltInDemoTrace } from "@/lib/demo";
 import { requestPaidAnalysis } from "@/lib/paid-analysis-client";
+import { prepareBranchPlan } from "@/lib/branch-generation";
 import {
   normalizeTrace,
   type AgentTrace,
@@ -662,6 +663,7 @@ export function ForkpointWorkspace() {
   const [correctedAssumption, setCorrectedAssumption] = useState("");
   const [branchPlan, setBranchPlan] = useState<string[]>([]);
   const [branchGenerated, setBranchGenerated] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [loading, setLoading] = useState<"analysis" | "branch" | "verify" | null>(
     null,
@@ -696,8 +698,9 @@ export function ForkpointWorkspace() {
     setAnalysis(localAnalysis);
     setMode(localAnalysis ? "demo" : null);
     setVerification(null);
-    setBranchPlan(localAnalysis?.alternativePlan ?? []);
+    setBranchPlan([]);
     setBranchGenerated(false);
+    setBranchError(null);
     setError(null);
     setLoading(null);
     setPaidCreditsConfirmed(false);
@@ -719,7 +722,9 @@ export function ForkpointWorkspace() {
       setAnalysis(payload.analysis);
       setMode(payload.mode);
       setCorrectedAssumption(payload.analysis.correctedAssumption);
-      setBranchPlan(payload.analysis.alternativePlan);
+      setBranchPlan([]);
+      setBranchGenerated(false);
+      setBranchError(null);
       setSelectedId(
         payload.analysis.firstErrorEventId || trace.events[0]?.id || null,
       );
@@ -750,11 +755,45 @@ export function ForkpointWorkspace() {
     }
   }
 
-  function generateBranch() {
-    if (!trace || !analysis || branchPlan.length === 0) return;
+  async function generateBranch() {
+    if (!trace || !analysis || loading !== null) return;
     setError(null);
+    setBranchError(null);
     setVerification(null);
-    setBranchGenerated(true);
+    setBranchGenerated(false);
+    setBranchPlan([]);
+    setLoading("branch");
+    try {
+      const minimumPendingTime = new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+      let nextPlan = analysis.alternativePlan;
+
+      if (isBuiltInDemoTrace(trace)) {
+        const [response] = await Promise.all([
+          fetch("/api/branch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trace, correctedAssumption }),
+          }),
+          minimumPendingTime,
+        ]);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Branch generation failed.");
+        }
+        nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
+      } else {
+        await minimumPendingTime;
+      }
+
+      setBranchPlan(prepareBranchPlan({ ...analysis, alternativePlan: nextPlan }));
+      setBranchGenerated(true);
+    } catch (caught) {
+      setBranchError(
+        caught instanceof Error ? caught.message : "Branch generation failed.",
+      );
+    } finally {
+      setLoading(null);
+    }
   }
 
   async function runVerification() {
@@ -785,6 +824,7 @@ export function ForkpointWorkspace() {
     setCorrectedAssumption("");
     setBranchPlan([]);
     setBranchGenerated(false);
+    setBranchError(null);
     setVerification(null);
     setError(null);
     setStatementVisible(false);
@@ -1156,26 +1196,35 @@ export function ForkpointWorkspace() {
                 </label>
                 <button
                   className="secondary-button"
-                  onClick={generateBranch}
+                  onClick={() => void generateBranch()}
                   disabled={loading !== null || correctedAssumption.trim().length < 3}
                 >
-                  <Sparkles size={16} />
-                  Generate branch
+                  {loading === "branch" ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+                  {loading === "branch" ? "Generating branch…" : "Generate branch"}
                 </button>
                 <button
                   className="verify-button"
                   onClick={runVerification}
-                  disabled={loading !== null || !presentation?.verificationAvailable}
+                  disabled={loading !== null || !branchGenerated || !presentation?.verificationAvailable}
                   title={
-                    presentation?.verificationAvailable
-                      ? undefined
-                      : "Safe verification is available only for the built-in fixture."
+                    !presentation?.verificationAvailable
+                      ? "Safe verification is available only for the built-in fixture."
+                      : !branchGenerated
+                        ? "Generate the corrected branch before running verification."
+                        : undefined
                   }
                 >
                   {loading === "verify" ? <LoaderCircle className="spin" size={16} /> : <Play size={16} fill="currentColor" />}
                   {presentation?.verificationButtonLabel}
                 </button>
               </div>
+
+              {branchError && (
+                <div className="branch-error" role="alert">
+                  <AlertTriangle size={15} />
+                  <span>{branchError}</span>
+                </div>
+              )}
 
               <div className="branch-grid">
                 <article className="branch-card original-branch">
@@ -1205,22 +1254,40 @@ export function ForkpointWorkspace() {
                     <span className={`branch-status ${verification?.passed ? "passed" : "pending"}`}>
                       {verification?.passed
                         ? "VERIFIED"
-                        : presentation?.verificationAvailable
-                          ? "READY"
-                          : "PLAN READY"}
+                        : loading === "branch"
+                          ? "GENERATING"
+                          : branchGenerated
+                            ? presentation?.verificationAvailable
+                              ? "READY"
+                              : "PLAN READY"
+                            : "NOT GENERATED"}
                     </span>
                   </header>
-                  <ol>
-                    {branchPlan.map((step, index) => (
-                      <li key={`${index}-${step}`}>
-                        <span>{index + 1}</span>
-                        <p>{step}</p>
-                      </li>
-                    ))}
-                  </ol>
+                  {branchGenerated ? (
+                    <ol>
+                      {branchPlan.map((step, index) => (
+                        <li key={`${index}-${step}`}>
+                          <span>{index + 1}</span>
+                          <p>{step}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <div className="branch-placeholder" role={loading === "branch" ? "status" : undefined}>
+                      {loading === "branch" ? <LoaderCircle className="spin" size={20} /> : <GitBranch size={20} />}
+                      <strong>{loading === "branch" ? "Generating corrected execution" : "Corrected branch not generated"}</strong>
+                      <span>
+                        {loading === "branch"
+                          ? "Building a deterministic plan from the corrected context…"
+                          : "Select Generate branch to reveal the corrected execution plan."}
+                      </span>
+                    </div>
+                  )}
                   <footer className={verification?.passed ? "verified-footer" : ""}>
                     {verification?.passed ? (
                       <><Check size={15} /> {verification.output}</>
+                    ) : !branchGenerated ? (
+                      <>Verification becomes available after branch generation.</>
                     ) : !presentation?.verificationAvailable ? (
                       <>Suggested verification: {analysis.verificationSuggestion}</>
                     ) : (
