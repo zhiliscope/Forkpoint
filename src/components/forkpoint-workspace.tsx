@@ -585,6 +585,11 @@ function DebuggerTreeMap({
     });
   }, [buildNodes, forkpointEvent?.id, setDefaultViewport, setNodes, trace.traceId]);
 
+  useEffect(() => {
+    if (!branchGenerated) return;
+    window.requestAnimationFrame(() => setDefaultViewport(flowRef.current));
+  }, [branchGenerated, setDefaultViewport]);
+
   return (
     <div className="interactive-tree-map">
       <ReactFlow<TreeFlowNode, Edge>
