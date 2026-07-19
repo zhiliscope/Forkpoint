@@ -2,12 +2,16 @@
 
 import {
   Background,
+  ControlButton,
   Controls,
-  MarkerType,
+  Handle,
   Position,
   ReactFlow,
+  useNodesState,
   type Edge,
   type Node,
+  type NodeProps,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import {
   AlertTriangle,
@@ -28,7 +32,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { demoTrace, isBuiltInDemoTrace } from "@/lib/demo";
 import { requestPaidAnalysis } from "@/lib/paid-analysis-client";
 import {
@@ -49,6 +53,276 @@ type Verification = {
   checks: { label: string; passed: boolean }[];
 };
 
+function ForkpointMark({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="forkpoint-mark"
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+    >
+      <path d="M4 12h7.5c3.1 0 3.9 4.8 7.5 4.8h1" />
+      <path className="mark-corrected" d="M11.5 12c3.1 0 3.9-4.8 7.5-4.8h1" />
+      <circle className="mark-input" cx="4" cy="12" r="1.45" />
+      <circle className="mark-forkpoint" cx="11.5" cy="12" r="1.8" />
+      <circle className="mark-failed-end" cx="20" cy="16.8" r="1.45" />
+      <circle className="mark-corrected-end" cx="20" cy="7.2" r="1.45" />
+    </svg>
+  );
+}
+
+function HeroBranchPreview() {
+  const heroRef = useRef<HTMLDivElement>(null);
+  const lastFrameRef = useRef("");
+  const [heroFrame, setHeroFrame] = useState({ stage: 0, originalStep: 0, correctedStep: 0 });
+
+  useEffect(() => {
+    const hero = heroRef.current;
+    if (!hero) return;
+
+    const runId = performance.now().toString() + "-" + Math.random().toString();
+    hero.dataset.timelineRun = runId;
+    let frame = 0;
+    let stopped = false;
+    const startedAt = performance.now();
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const commit = (stage: number, originalStep: number, correctedStep: number) => {
+      const key = [stage, originalStep, correctedStep].join("-");
+      if (key === lastFrameRef.current) return;
+      lastFrameRef.current = key;
+      setHeroFrame({ stage, originalStep, correctedStep });
+      hero.classList.toggle("hero-complete", stage >= 10);
+    };
+
+    const finish = () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      commit(10, 6, 4);
+    };
+
+    const tick = (now: number) => {
+      if (stopped || hero.dataset.timelineRun !== runId) return;
+      const elapsed = now - startedAt;
+      let stage = 0;
+      let originalStep = 0;
+      let correctedStep = 0;
+
+      if (elapsed >= 450) stage = 1;
+      if (elapsed >= 1250) {
+        stage = 2;
+        originalStep = Math.min(6, Math.floor((elapsed - 1250) / 620) + 1);
+      }
+      if (elapsed >= 5200) { stage = 3; originalStep = 6; }
+      if (elapsed >= 6400) stage = 4;
+      if (elapsed >= 8500) stage = 5;
+      if (elapsed >= 9700) stage = 6;
+      if (elapsed >= 11200) stage = 7;
+      if (elapsed >= 12600) {
+        stage = 8;
+        correctedStep = Math.min(4, Math.floor((elapsed - 12600) / 760) + 1);
+      }
+      if (elapsed >= 15900) { stage = 9; correctedStep = 4; }
+      if (elapsed >= 18200) { finish(); return; }
+
+      commit(stage, originalStep, correctedStep);
+      frame = requestAnimationFrame(tick);
+    };
+
+    const finishOnScroll = () => {
+      if (
+        hero.dataset.timelineRun !== runId ||
+        window.scrollY < 48 ||
+        hero.classList.contains("hero-complete")
+      ) return;
+      finish();
+    };
+
+    lastFrameRef.current = "";
+    if (reduceMotion) {
+      finish();
+    } else {
+      frame = requestAnimationFrame(tick);
+      window.addEventListener("scroll", finishOnScroll, { passive: true });
+    }
+
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", finishOnScroll);
+      if (hero.dataset.timelineRun === runId) delete hero.dataset.timelineRun;
+    };
+  }, []);
+
+  const { stage, originalStep, correctedStep } = heroFrame;
+  const originalSteps = [
+    { number: "01", type: "ACTION", title: "Inspect repository structure", detail: "Scanning application files" },
+    { number: "02", type: "FILE READ", title: "Read application entry", detail: "src/App.tsx" },
+    { number: "03", type: "DECISION", title: "Select routing strategy", detail: "This project uses React Router.", assumption: true },
+    { number: "04", type: "FILE EDIT", title: "Create settings page", detail: "src/pages/Settings.tsx" },
+    { number: "05", type: "DEPENDENCY", title: "Import routing package", detail: "react-router-dom" },
+    { number: "06", type: "VERIFY", title: "Run production build", detail: "npm run build" },
+  ];
+  const correctedSteps = [
+    { number: "03′", type: "DECISION", title: "Confirm Next.js App Router", detail: "Repository convention verified" },
+    { number: "04′", type: "FILE EDIT", title: "Create settings route", detail: "app/settings/page.tsx" },
+    { number: "05′", type: "CONVENTION", title: "Preserve routing structure", detail: "No new router dependency" },
+    { number: "06′", type: "VERIFY", title: "Run route verification", detail: "/settings" },
+  ];
+  const status =
+    stage < 1 ? "Preparing agent" :
+    stage < 3 ? "Agent running" :
+    stage === 3 ? "Execution failed" :
+    stage < 8 ? "Forkpoint analysis" :
+    stage < 9 ? "Regenerating branch" :
+    "Verification complete";
+
+  return (
+    <div
+      className={"hero-branch execution-hero stage-" + stage + (stage >= 10 ? " hero-complete" : "")}
+      data-stage={stage}
+      data-original-step={originalStep}
+      data-corrected-step={correctedStep}
+      ref={heroRef}
+      role="img"
+      aria-label="An AI agent makes an unsupported routing assumption, Forkpoint rewinds to the first causal error, and a corrected execution passes verification."
+    >
+      <div className="execution-window">
+        <div className="execution-chrome">
+          <div className="execution-title">
+            <span className={"run-status-dot " + (stage > 0 && stage < 10 ? "is-active" : "")} />
+            <strong>AI Agent Execution</strong>
+          </div>
+          <span className="execution-id">agent-run / settings-page</span>
+          <span className="execution-state">{status}</span>
+        </div>
+
+        <div className="execution-body">
+          <section className="request-block">
+            <span>REQUEST</span>
+            <p>Add a settings page to this application.</p>
+            <code>00:00:00</code>
+          </section>
+
+          <div className="execution-stage">
+            <section className="execution-lane original-execution">
+              <div className="lane-heading">
+                <span>Original execution</span>
+                <small>{stage >= 3 ? "Build failed" : "Live trace"}</small>
+              </div>
+              <div className="execution-rail" aria-hidden="true">
+                <i className="rail-progress" />
+                {originalSteps.map((_, index) => <i className={`rail-marker rail-marker-${index + 1}`} key={index} />)}
+                <i className="causal-scan" />
+                <i className="rewind-marker" />
+              </div>
+
+              <div className="step-stream">
+                {originalSteps.map((step, index) => {
+                  const number = index + 1;
+                  const visible = originalStep >= number;
+                  const active = stage === 2 && originalStep === number;
+                  const isForkpoint = step.assumption && stage >= 5;
+                  return (
+                    <div
+                      className={[
+                        "cinema-step",
+                        visible ? "is-visible" : "",
+                        active ? "is-active" : "",
+                        visible && !active ? "is-history" : "",
+                        step.assumption ? "is-assumption" : "",
+                        isForkpoint ? "is-forkpoint" : "",
+                        stage >= 7 && number > 3 ? "is-affected-history" : "",
+                      ].filter(Boolean).join(" ")}
+                      key={step.number}
+                    >
+                      <span className="step-index"><b>{step.number}</b><small>{step.type}</small></span>
+                      <div className="step-copy">
+                        <p>{step.title}</p>
+                        <div className="row-detail"><span>{step.assumption ? "Assumption:" : ""}</span><code>{step.detail}</code></div>
+                        {step.assumption && <div className="corrected-context"><span>Next.js</span><q>App Router confirmed</q></div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="rewind-label">REWIND TO FORKPOINT #02</div>
+            </section>
+
+            <aside className="trace-detail">
+              <div className="failure-output">
+                <span>BUILD FAILED</span>
+                <strong>Module not found</strong>
+                <code>Cannot resolve “react-router-dom”</code>
+              </div>
+
+              <div className="analysis-overlay" aria-hidden="true">
+                <span>Analyzing causal trace</span>
+                <ol><li>Build failed</li><li>Router dependency added</li><li>Wrong settings location</li><li>Routing strategy selected</li></ol>
+              </div>
+
+              <div className="forkpoint-diagnosis">
+                <strong>FORKPOINT #02</strong>
+                <p>First unsupported assumption</p>
+                <dl><div><dt>Evidence support</dt><dd>None</dd></div><div><dt>Downstream impact</dt><dd>7 events</dd></div></dl>
+              </div>
+
+              <div className="repository-evidence">
+                <span>Repository evidence</span>
+                <div><code>package.json</code><strong>Next.js detected</strong></div>
+                <div><code>app/layout.tsx</code><strong>App Router detected</strong></div>
+                <div><code>react-router-dom</code><strong>Not installed</strong></div>
+              </div>
+
+              <section className="execution-lane corrected-execution">
+              <div className="lane-heading">
+                  <span>Corrected execution</span>
+                  <small>{stage >= 9 ? "Verification passed" : "Regenerating"}</small>
+              </div>
+              <div className="execution-rail corrected-rail" aria-hidden="true">
+                <i className="rail-progress" />
+                {correctedSteps.map((_, index) => <i className={`rail-marker rail-marker-${index + 1}`} key={index} />)}
+                <i className="branch-light" />
+              </div>
+              <div className="step-stream">
+                {correctedSteps.map((step, index) => {
+                  const number = index + 1;
+                  const visible = correctedStep >= number;
+                  const active = stage === 8 && correctedStep === number;
+                  return (
+                    <div
+                      className={[
+                        "cinema-step",
+                        visible ? "is-visible" : "",
+                        active ? "is-active" : "",
+                        visible && !active ? "is-history" : "",
+                      ].filter(Boolean).join(" ")}
+                      key={step.number}
+                    >
+                        <span className="step-index"><b>{step.number}</b><small>{step.type}</small></span>
+                        <div className="step-copy"><p>{step.title}</p><div className="row-detail"><code>{step.detail}</code></div></div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="verification-output">
+                <span className="verification-mark"><Check size={13} /></span>
+                  <div><strong>Verification passed</strong><p>/settings route created successfully</p></div>
+              </div>
+              </section>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <div className="execution-comparison">
+        <span>Original execution <strong>failed</strong></span><i />
+        <span>Forkpoint #02 corrected</span><i />
+        <span>Corrected execution <strong>verified</strong></span>
+      </div>
+    </div>
+  );
+}
 const eventMeta: Record<
   TraceEvent["type"],
   { label: string; short: string; className: string }
@@ -94,118 +368,285 @@ function formatTime(timestamp: string) {
   }).format(new Date(timestamp));
 }
 
-function collectRelated(
-  id: string,
-  edges: Analysis["propagationEdges"],
-): Set<string> {
-  const related = new Set([id]);
-  const queue = [id];
-  while (queue.length) {
-    const current = queue.shift()!;
-    for (const edge of edges) {
-      if (edge.source === current && !related.has(edge.target)) {
-        related.add(edge.target);
-        queue.push(edge.target);
-      }
-      if (edge.target === current && !related.has(edge.source)) {
-        related.add(edge.source);
-        queue.push(edge.source);
-      }
-    }
-  }
-  return related;
+function conciseAssumption(value: string) {
+  const firstClause = value.split(/,\s+(?:so|therefore|because)\b/i)[0]?.trim() ?? value;
+  return /[.!?]$/.test(firstClause) ? firstClause : `${firstClause}.`;
 }
 
-function buildGraph(
-  trace: AgentTrace,
-  analysis: Analysis,
-  selectedId: string | null,
-): { nodes: Node[]; edges: Edge[] } {
-  const eventMap = new Map(trace.events.map((event) => [event.id, event]));
-  const graphIds = new Set(
-    analysis.propagationEdges.flatMap((edge) => [edge.source, edge.target]),
+type DebuggerTreeMapProps = {
+  trace: AgentTrace;
+  analysis: Analysis;
+  selectedId: string | null;
+  branchGenerated: boolean;
+  verification: Verification | null;
+  onSelect: (eventId: string) => void;
+};
+
+type TreeNodeKind = "request" | "forkpoint" | "failure" | "evidence" | "finding" | "final" | "preview" | "corrected" | "verified";
+type TreeNodeData = Record<string, unknown> & {
+  eventId?: string;
+  kind: TreeNodeKind;
+  meta: string;
+  number?: string;
+  title: string;
+  detail?: string;
+  leftHandle?: boolean;
+  rightHandle?: boolean;
+};
+type TreeFlowNode = Node<TreeNodeData, "debuggerTreeNode">;
+
+function DebuggerTreeNodeView({ data, selected }: NodeProps<TreeFlowNode>) {
+  return (
+    <div className={`flow-debugger-node flow-debugger-node--${data.kind}${selected ? " is-selected" : ""}`}>
+      <Handle id="target-top" className="flow-node-handle" type="target" position={Position.Top} />
+      {data.leftHandle && <Handle id="target-left" className="flow-node-handle" type="target" position={Position.Left} />}
+      <span className="flow-debugger-meta"><span>{data.meta}</span>{data.number && <code>#{data.number}</code>}</span>
+      <strong>{data.title}</strong>
+      {data.detail && <small>{data.detail}</small>}
+      <Handle id="source-bottom" className="flow-node-handle" type="source" position={Position.Bottom} />
+      {data.rightHandle && <Handle id="source-right" className="flow-node-handle" type="source" position={Position.Right} />}
+    </div>
   );
-  if (analysis.firstErrorEventId) graphIds.add(analysis.firstErrorEventId);
-  const related = selectedId
-    ? collectRelated(selectedId, analysis.propagationEdges)
-    : new Set<string>();
+}
 
-  const levels = new Map<string, number>();
-  const incoming = new Map<string, number>();
-  for (const id of graphIds) incoming.set(id, 0);
-  for (const edge of analysis.propagationEdges) {
-    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
-  }
-  const roots = [...graphIds].filter((id) => (incoming.get(id) ?? 0) === 0);
-  const queue = roots.map((id) => ({ id, level: 0 }));
-  while (queue.length) {
-    const { id, level } = queue.shift()!;
-    levels.set(id, Math.max(levels.get(id) ?? 0, level));
-    for (const edge of analysis.propagationEdges.filter((item) => item.source === id)) {
-      queue.push({ id: edge.target, level: level + 1 });
-    }
-  }
+const debuggerTreeNodeTypes = { debuggerTreeNode: DebuggerTreeNodeView };
+const treeDefaultPositions: Record<string, { x: number; y: number }> = {
+  request: { x: 250, y: 8 },
+  forkpoint: { x: 240, y: 94 },
+  "file-evidence": { x: 0, y: 188 },
+  decision: { x: 250, y: 188 },
+  "first-edit": { x: 250, y: 272 },
+  "second-edit": { x: 250, y: 356 },
+  "tool-failure": { x: 80, y: 440 },
+  "framework-evidence": { x: 420, y: 440 },
+  "test-failure": { x: 80, y: 524 },
+  finding: { x: 420, y: 524 },
+  final: { x: 250, y: 608 },
+  preview: { x: 590, y: 120 },
+  "corrected-context": { x: 590, y: 188 },
+  "corrected-inspect": { x: 590, y: 272 },
+  "corrected-create": { x: 590, y: 356 },
+  "corrected-verify": { x: 590, y: 440 },
+  "corrected-result": { x: 590, y: 524 },
+};
 
-  const rows = new Map<number, string[]>();
-  for (const id of graphIds) {
-    const level = levels.get(id) ?? 0;
-    rows.set(level, [...(rows.get(level) ?? []), id]);
-  }
+function DebuggerTreeMap({
+  trace,
+  analysis,
+  selectedId,
+  branchGenerated,
+  verification,
+  onSelect,
+}: DebuggerTreeMapProps) {
+  const isDemo = isBuiltInDemoTrace(trace);
+  const byId = (id: string) => trace.events.find((event) => event.id === id);
+  const requestEvent = trace.events.find((event) => event.type === "user_request") ?? trace.events[0];
+  const forkpointEvent = byId(analysis.firstErrorEventId ?? "") ?? trace.events.find((event) => event.type === "assumption");
+  const affectedEvents = trace.events.filter((event) => analysis.affectedEventIds.includes(event.id));
+  const evidenceEvents = analysis.supportingEvidenceEventIds
+    .map(byId)
+    .filter((event): event is TraceEvent => Boolean(event));
+  const pick = (demoId: string, predicate: (event: TraceEvent) => boolean, used: Set<string>) => {
+    const event = (isDemo ? byId(demoId) : undefined) ?? affectedEvents.find((candidate) => !used.has(candidate.id) && predicate(candidate));
+    if (event) used.add(event.id);
+    return event;
+  };
+  const used = new Set<string>();
+  const decisionEvent = pick("event-4", (event) => event.type === "reasoning_summary", used);
+  const firstEditEvent = pick("event-5", (event) => event.type === "file_edit", used);
+  const secondEditEvent = pick("event-6", (event) => event.type === "file_edit", used);
+  const toolFailureEvent = pick("event-8", (event) => event.type === "tool_result" && event.status === "failed", used);
+  const testFailureEvent = pick("event-10", (event) => event.type === "test_result", used);
+  const finalFailureEvent = pick("event-11", (event) => event.type === "final_result", used) ?? affectedEvents.at(-1);
+  const fileEvidenceEvent = (isDemo ? byId("event-3") : undefined) ?? evidenceEvents.find((event) => event.type === "file_read");
+  const frameworkEvidenceEvent = (isDemo ? byId("event-9") : undefined) ?? evidenceEvents.find((event) => event.id !== fileEvidenceEvent?.id);
+  const requestTitle = isDemo ? "Add a settings page" : eventTitle(requestEvent);
+  const forkpointTitle = isDemo ? "Assumed React Router" : eventTitle(forkpointEvent ?? requestEvent);
+  const correctedTitle = isDemo
+    ? "Next.js App Router"
+    : conciseAssumption(analysis.correctedAssumption).replace(/[.!?]$/, "");
+  const flowRef = useRef<ReactFlowInstance<TreeFlowNode, Edge> | null>(null);
+  const customizedRef = useRef(false);
+  const draggedRef = useRef<string | null>(null);
+  const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const traceIdRef = useRef(trace.traceId);
+  const [showHint, setShowHint] = useState(true);
 
-  const nodes = [...graphIds].flatMap((id) => {
-    const event = eventMap.get(id);
-    if (!event) return [];
-    const level = levels.get(id) ?? 0;
-    const row = rows.get(level) ?? [id];
-    const rowIndex = row.indexOf(id);
-    const isForkpoint = id === analysis.firstErrorEventId;
-    const isSelected = id === selectedId;
-    const isDimmed = selectedId !== null && !related.has(id);
-    return [
-      {
-        id,
-        position: {
-          x: 300 + (rowIndex - (row.length - 1) / 2) * 220,
-          y: level * 116 + 36,
-        },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
-        data: {
-          label: (
-            <div className="graph-node-content">
-              <div className="graph-node-kicker">
-                <span>{isForkpoint ? "FORKPOINT" : eventMeta[event.type].label}</span>
-                <span>{event.id.replace("event-", "#")}</span>
-              </div>
-              <strong>{eventTitle(event)}</strong>
-            </div>
-          ),
-        },
-        className: `graph-node graph-${eventMeta[event.type].className} ${
-          isForkpoint ? "is-forkpoint" : ""
-        } ${isSelected ? "is-selected" : ""} ${isDimmed ? "is-dimmed" : ""}`,
-      },
+  const makeNode = useCallback((
+    id: string,
+    positionKey: string,
+    kind: TreeNodeKind,
+    meta: string,
+    number: string | undefined,
+    title: string,
+    eventId?: string,
+    detail?: string,
+    handles: { left?: boolean; right?: boolean } = {},
+  ): TreeFlowNode => ({
+    id,
+    type: "debuggerTreeNode",
+    position: treeDefaultPositions[positionKey],
+    draggable: true,
+    selectable: true,
+    selected: selectedId === eventId,
+    data: { eventId, kind, meta, number, title, detail, leftHandle: handles.left, rightHandle: handles.right },
+    style: { width: kind === "forkpoint" ? 240 : 220, minHeight: kind === "forkpoint" ? 64 : 56 },
+  }), [selectedId]);
+
+  const buildNodes = useCallback((): TreeFlowNode[] => {
+    const result: TreeFlowNode[] = [
+      makeNode(requestEvent.id, "request", "request", "Request", "01", requestTitle, requestEvent.id),
+      makeNode(forkpointEvent?.id ?? "forkpoint", "forkpoint", "forkpoint", "Forkpoint", "02", forkpointTitle, forkpointEvent?.id, "Unsupported assumption", { right: true }),
+      makeNode(fileEvidenceEvent?.id ?? "file-evidence", "file-evidence", "evidence", "File read", "03", isDemo ? "src/App.tsx" : eventTitle(fileEvidenceEvent ?? requestEvent), fileEvidenceEvent?.id, undefined, { right: true }),
+      makeNode(decisionEvent?.id ?? "decision", "decision", "failure", "Decision", "04", isDemo ? "Wrong routing model" : eventTitle(decisionEvent ?? requestEvent), decisionEvent?.id, undefined, { left: true }),
+      makeNode(firstEditEvent?.id ?? "first-edit", "first-edit", "failure", "File edit", "05", isDemo ? "src/pages/Settings.tsx" : eventTitle(firstEditEvent ?? requestEvent), firstEditEvent?.id),
+      makeNode(secondEditEvent?.id ?? "second-edit", "second-edit", "failure", "File edit", "06", isDemo ? "src/App.tsx" : eventTitle(secondEditEvent ?? requestEvent), secondEditEvent?.id),
+      makeNode(toolFailureEvent?.id ?? "tool-failure", "tool-failure", "failure", "Tool result", "08", isDemo ? "Missing dependency" : eventTitle(toolFailureEvent ?? requestEvent), toolFailureEvent?.id),
+      makeNode(frameworkEvidenceEvent?.id ?? "framework-evidence", "framework-evidence", "evidence", "Evidence", "09", isDemo ? "Next.js App Router" : eventTitle(frameworkEvidenceEvent ?? requestEvent), frameworkEvidenceEvent?.id),
+      makeNode(testFailureEvent?.id ?? "test-failure", "test-failure", "failure", "Test result", "10", isDemo ? "Route failed" : eventTitle(testFailureEvent ?? requestEvent), testFailureEvent?.id),
+      makeNode("analysis-finding", "finding", "finding", "Causal finding", undefined, "Router assumption contradicted", frameworkEvidenceEvent?.id),
+      makeNode(finalFailureEvent?.id ?? "final", "final", "final", "Final result", "11", isDemo ? "Build failed" : eventTitle(finalFailureEvent ?? requestEvent), finalFailureEvent?.id),
     ];
-  });
+    if (!branchGenerated) {
+      result.push(makeNode("corrected-preview", "preview", "preview", "Corrected branch", undefined, "Generate replay", undefined, undefined, { left: true }));
+    } else {
+      result.push(
+        makeNode("corrected-context", "corrected-context", "corrected", "Corrected context", undefined, correctedTitle, undefined, undefined, { left: true }),
+        makeNode("corrected-inspect", "corrected-inspect", "corrected", "Replay", "01", "Inspect framework"),
+        makeNode("corrected-create", "corrected-create", "corrected", "File edit", "02", "Create correct route"),
+        makeNode("corrected-verify", "corrected-verify", "corrected", "Verification", "03", "Run verifier"),
+        makeNode("corrected-result", "corrected-result", verification?.passed ? "verified" : "corrected", "Corrected result", undefined, verification?.passed ? "Verification passed" : "Ready to verify", undefined, verification?.passed ? "/settings route created" : undefined),
+      );
+    }
+    return result;
+  }, [branchGenerated, correctedTitle, decisionEvent, fileEvidenceEvent, finalFailureEvent, firstEditEvent, forkpointEvent, forkpointTitle, frameworkEvidenceEvent, isDemo, makeNode, requestEvent, requestTitle, secondEditEvent, testFailureEvent, toolFailureEvent, verification?.passed]);
 
-  const edges = analysis.propagationEdges.map((edge, index) => ({
-    id: `edge-${index}`,
-    source: edge.source,
-    target: edge.target,
-    type: "smoothstep",
-    animated: edge.source === analysis.firstErrorEventId,
-    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-    style: {
-      stroke:
-        edge.source === analysis.firstErrorEventId || edge.target === analysis.firstErrorEventId
-          ? "#ef5b5b"
-          : "#515765",
-      strokeWidth: 1.5,
-      opacity:
-        selectedId && (!related.has(edge.source) || !related.has(edge.target)) ? 0.15 : 0.85,
-    },
-  }));
-  return { nodes, edges };
+  const [nodes, setNodes, onNodesChange] = useNodesState<TreeFlowNode>(buildNodes());
+
+  const edges = useMemo(() => {
+    const edge = (id: string, source: string, target: string, kind: "neutral" | "failure" | "evidence" | "corrected" | "preview", sourceHandle = "source-bottom", targetHandle = "target-top"): Edge => ({
+      id, source, target, sourceHandle, targetHandle, type: "smoothstep", className: `flow-tree-edge flow-tree-edge--${kind}`,
+      style: { stroke: kind === "failure" ? "#bf8989" : kind === "evidence" ? "#8f99b7" : kind === "corrected" || kind === "preview" ? "#7184ca" : "#9da5ae", strokeWidth: 1.45, strokeDasharray: kind === "preview" ? "4 6" : undefined },
+    });
+    const result = [
+      edge("request-forkpoint", requestEvent.id, forkpointEvent?.id ?? "forkpoint", "neutral"),
+      edge("forkpoint-decision", forkpointEvent?.id ?? "forkpoint", decisionEvent?.id ?? "decision", "failure"),
+      edge("file-evidence-decision", fileEvidenceEvent?.id ?? "file-evidence", decisionEvent?.id ?? "decision", "evidence", "source-right", "target-left"),
+      edge("decision-edit", decisionEvent?.id ?? "decision", firstEditEvent?.id ?? "first-edit", "failure"),
+      edge("edit-edit", firstEditEvent?.id ?? "first-edit", secondEditEvent?.id ?? "second-edit", "failure"),
+      edge("edit-tool", secondEditEvent?.id ?? "second-edit", toolFailureEvent?.id ?? "tool-failure", "failure"),
+      edge("edit-evidence", secondEditEvent?.id ?? "second-edit", frameworkEvidenceEvent?.id ?? "framework-evidence", "evidence"),
+      edge("tool-test", toolFailureEvent?.id ?? "tool-failure", testFailureEvent?.id ?? "test-failure", "failure"),
+      edge("evidence-finding", frameworkEvidenceEvent?.id ?? "framework-evidence", "analysis-finding", "evidence"),
+      edge("test-final", testFailureEvent?.id ?? "test-failure", finalFailureEvent?.id ?? "final", "failure"),
+      edge("finding-final", "analysis-finding", finalFailureEvent?.id ?? "final", "evidence"),
+    ];
+    if (!branchGenerated) result.push(edge("forkpoint-preview", forkpointEvent?.id ?? "forkpoint", "corrected-preview", "preview", "source-right", "target-left"));
+    else {
+      result.push(
+        edge("forkpoint-corrected", forkpointEvent?.id ?? "forkpoint", "corrected-context", "corrected", "source-right", "target-left"),
+        edge("corrected-1", "corrected-context", "corrected-inspect", "corrected"),
+        edge("corrected-2", "corrected-inspect", "corrected-create", "corrected"),
+        edge("corrected-3", "corrected-create", "corrected-verify", "corrected"),
+        edge("corrected-4", "corrected-verify", "corrected-result", "corrected"),
+      );
+    }
+    return result;
+  }, [branchGenerated, decisionEvent, fileEvidenceEvent, finalFailureEvent, firstEditEvent, forkpointEvent, frameworkEvidenceEvent, requestEvent.id, secondEditEvent, testFailureEvent, toolFailureEvent]);
+
+  const setDefaultViewport = useCallback((instance: ReactFlowInstance<TreeFlowNode, Edge> | null) => {
+    if (!instance) return;
+    const canvas = document.querySelector<HTMLElement>(".flow-wrap");
+    if (!canvas) return;
+    const zoom = Math.min(.9, Math.max(.58, Math.min((canvas.clientWidth - 28) / 840, (canvas.clientHeight - 24) / 680)));
+    void instance.setViewport({ x: canvas.clientWidth / 2 - 410 * zoom, y: canvas.clientHeight / 2 - 330 * zoom, zoom }, { duration: 260 });
+  }, []);
+
+  useEffect(() => {
+    const defaults = buildNodes();
+    if (traceIdRef.current !== trace.traceId) {
+      traceIdRef.current = trace.traceId;
+      customizedRef.current = false;
+      setNodes(defaults);
+      window.requestAnimationFrame(() => setDefaultViewport(flowRef.current));
+      return;
+    }
+    setNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]));
+      const fork = currentById.get(forkpointEvent?.id ?? "forkpoint");
+      return defaults.map((node) => {
+        const existing = currentById.get(node.id);
+        if (existing) return { ...node, position: existing.position, dragging: existing.dragging };
+        if (node.id.startsWith("corrected-") && fork && customizedRef.current) {
+          return { ...node, position: { x: fork.position.x + 350, y: node.position.y } };
+        }
+        return node;
+      });
+    });
+  }, [buildNodes, forkpointEvent?.id, setDefaultViewport, setNodes, trace.traceId]);
+
+  return (
+    <div className="interactive-tree-map">
+      <ReactFlow<TreeFlowNode, Edge>
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={debuggerTreeNodeTypes}
+        onNodesChange={onNodesChange}
+        nodesDraggable
+        nodesConnectable={false}
+        panOnDrag
+        zoomOnScroll
+        zoomOnPinch
+        minZoom={0.5}
+        maxZoom={1.35}
+        defaultViewport={{ x: 16, y: 8, zoom: 0.72 }}
+        onInit={(instance) => { flowRef.current = instance; setDefaultViewport(instance); }}
+        onNodeDragStart={(_, node) => {
+          setShowHint(false);
+          draggedRef.current = null;
+          dragStartRef.current = { id: node.id, x: node.position.x, y: node.position.y };
+        }}
+        onNodeDragStop={(_, node) => {
+          const start = dragStartRef.current;
+          if (start && start.id === node.id && Math.hypot(node.position.x - start.x, node.position.y - start.y) > 4) {
+            customizedRef.current = true;
+            draggedRef.current = node.id;
+          }
+          dragStartRef.current = null;
+        }}
+        onNodeClick={(_, node) => {
+          if (draggedRef.current === node.id) { draggedRef.current = null; return; }
+          const eventId = node.data.eventId;
+          if (eventId) onSelect(eventId);
+          else document.querySelector(".branch-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+        onMoveStart={() => setShowHint(false)}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background color="#e0e4e9" gap={24} size={1} />
+        <Controls showInteractive={false}>
+          <ControlButton
+            title="Reset layout"
+            aria-label="Reset graph layout"
+            onClick={() => {
+              customizedRef.current = false;
+              setNodes(buildNodes());
+              setDefaultViewport(flowRef.current);
+            }}
+          ><RotateCcw size={14} /></ControlButton>
+        </Controls>
+      </ReactFlow>
+      {showHint && <span className="tree-drag-hint">Drag nodes to rearrange</span>}
+      <button
+        className="focus-forkpoint"
+        onClick={() => {
+          const fork = nodes.find((node) => node.id === (analysis.firstErrorEventId ?? "forkpoint"));
+          if (fork) void flowRef.current?.setCenter(fork.position.x + 120, fork.position.y + 32, { zoom: .95, duration: 380 });
+          if (analysis.firstErrorEventId) onSelect(analysis.firstErrorEventId);
+        }}
+      ><CircleDot size={14} /> Focus Forkpoint</button>
+    </div>
+  );
 }
 
 export function ForkpointWorkspace() {
@@ -215,27 +656,35 @@ export function ForkpointWorkspace() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [correctedAssumption, setCorrectedAssumption] = useState("");
   const [branchPlan, setBranchPlan] = useState<string[]>([]);
+  const [branchGenerated, setBranchGenerated] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [loading, setLoading] = useState<"analysis" | "branch" | "verify" | null>(
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [statementVisible, setStatementVisible] = useState(false);
+  const [showFullAnalysis, setShowFullAnalysis] = useState(false);
+  const [showAffectedEvents, setShowAffectedEvents] = useState(false);
   const [paidCreditsConfirmed, setPaidCreditsConfirmed] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const statementRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (trace || !statementRef.current) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setStatementVisible(entry.isIntersecting),
+      { threshold: 0.18 },
+    );
+    observer.observe(statementRef.current);
+    return () => observer.disconnect();
+  }, [trace]);
 
   const selectedEvent = trace?.events.find((event) => event.id === selectedId) ?? null;
   const presentation = useMemo(
     () => (trace ? getTracePresentation(trace) : null),
     [trace],
   );
-  const graph = useMemo(
-    () =>
-      trace && analysis
-        ? buildGraph(trace, analysis, selectedId)
-        : { nodes: [], edges: [] },
-    [trace, analysis, selectedId],
-  );
-
   const loadTraceLocally = useCallback((nextTrace: AgentTrace) => {
     const localAnalysis = getLocalDeterministicAnalysis(nextTrace);
     setTrace(nextTrace);
@@ -243,6 +692,7 @@ export function ForkpointWorkspace() {
     setMode(localAnalysis ? "demo" : null);
     setVerification(null);
     setBranchPlan(localAnalysis?.alternativePlan ?? []);
+    setBranchGenerated(false);
     setError(null);
     setLoading(null);
     setPaidCreditsConfirmed(false);
@@ -299,6 +749,7 @@ export function ForkpointWorkspace() {
     if (!trace || !analysis || branchPlan.length === 0) return;
     setError(null);
     setVerification(null);
+    setBranchGenerated(true);
   }
 
   async function runVerification() {
@@ -328,16 +779,20 @@ export function ForkpointWorkspace() {
     setSelectedId(null);
     setCorrectedAssumption("");
     setBranchPlan([]);
+    setBranchGenerated(false);
     setVerification(null);
     setError(null);
+    setStatementVisible(false);
+    setShowFullAnalysis(false);
+    setShowAffectedEvents(false);
     setPaidCreditsConfirmed(false);
   }
 
   return (
     <main className="app-shell">
-      <header className="topbar">
+      <header className={`topbar ${trace ? "topbar--workspace" : "topbar--landing"}`}>
         <button className="brand" onClick={reset} aria-label="Reset Forkpoint">
-          <span className="brand-mark"><GitBranch size={17} /></span>
+          <span className="brand-mark"><ForkpointMark size={18} /></span>
           <span>Forkpoint</span>
           <span className="build-tag">BUILD WEEK</span>
         </button>
@@ -374,24 +829,50 @@ export function ForkpointWorkspace() {
       )}
 
       {!trace ? (
-        <section className="empty-state">
-          <div className="empty-eyebrow"><CircleDot size={14} /> EXECUTION FORENSICS</div>
-          <h1>Find the moment<br />the agent went off course.</h1>
-          <p>
-            Import an observable agent trace. Forkpoint locates the earliest
-            unsupported assumption, maps its downstream impact, and replays a
-            corrected branch.
-          </p>
-          <div className="empty-actions">
-            <button className="primary-button" onClick={() => loadTraceLocally(demoTrace)}>
-              <Play size={16} fill="currentColor" />
-              Load built-in investigation
-            </button>
-            <button className="secondary-button" onClick={() => fileInput.current?.click()}>
-              <Upload size={16} />
-              Import JSON trace
-            </button>
-          </div>
+        <div className={`landing-shell ${statementVisible ? "statement-in-view" : ""}`}>
+          <section className="empty-state" aria-labelledby="landing-product-label">
+            <div className="empty-eyebrow" id="landing-product-label">
+              <CircleDot size={13} /> AI AGENT TIME-TRAVEL DEBUGGER
+            </div>
+            <HeroBranchPreview />
+            <div className="landing-scroll-cue" aria-hidden="true">
+              <span>Scroll to explore</span>
+              <i />
+            </div>
+          </section>
+
+          <section
+            className={`landing-statement ${statementVisible ? "is-visible" : ""}`}
+            ref={statementRef}
+            aria-labelledby="landing-headline"
+          >
+            <div className="statement-inner">
+              <div className="statement-eyebrow reveal-step">THE CAUSAL DEBUGGER FOR AI AGENTS</div>
+              <h1 id="landing-headline">
+                <span className="reveal-step">Find the first wrong decision.</span>
+                <span className="reveal-step">Replay what should have happened.</span>
+              </h1>
+              <p className="reveal-step">
+                Trace an agent&apos;s reasoning, isolate the earliest unsupported assumption,
+                and replay a corrected decision branch.
+              </p>
+              <div className="empty-actions reveal-step">
+                <button className="primary-button" onClick={() => loadTraceLocally(demoTrace)}>
+                  <Play size={16} fill="currentColor" />
+                  Start debugging
+                </button>
+                <button className="secondary-button" onClick={() => fileInput.current?.click()}>
+                  <Upload size={16} />
+                  Import trace
+                </button>
+              </div>
+              <div className="empty-proof reveal-step">
+                <div><Search size={17} /><span><strong>Diagnose</strong>Find the first causal error</span></div>
+                <div><GitBranch size={17} /><span><strong>Branch</strong>Replay with corrected context</span></div>
+                <div><ShieldCheck size={17} /><span><strong>Verify</strong>Test the corrected outcome</span></div>
+              </div>
+            </div>
+          </section>
           <input
             ref={fileInput}
             hidden
@@ -403,12 +884,7 @@ export function ForkpointWorkspace() {
               event.target.value = "";
             }}
           />
-          <div className="empty-proof">
-            <div><Search size={17} /><span><strong>Diagnose</strong> earliest causal error</span></div>
-            <div><GitBranch size={17} /><span><strong>Branch</strong> with corrected context</span></div>
-            <div><ShieldCheck size={17} /><span><strong>Verify</strong> in an isolated fixture</span></div>
-          </div>
-        </section>
+        </div>
       ) : (
         <>
           <section className="workspace-grid">
@@ -416,13 +892,9 @@ export function ForkpointWorkspace() {
               <div className="panel-header">
                 <div>
                   <span className="panel-kicker">TRACE</span>
-                  <h2>Execution timeline</h2>
+                  <h2>Debugger Timeline</h2>
                 </div>
                 <span className="count-badge">{trace.events.length}</span>
-              </div>
-              <div className="task-card">
-                <span>ORIGINAL REQUEST</span>
-                <p>{trace.task}</p>
               </div>
               <div className="timeline-list">
                 {trace.events.map((event, index) => {
@@ -431,6 +903,7 @@ export function ForkpointWorkspace() {
                   return (
                     <button
                       key={event.id}
+                      title={`${eventTitle(event)} — ${eventDetail(event)}`}
                       className={`timeline-item ${selectedId === event.id ? "selected" : ""} ${
                         isForkpoint ? "forkpoint" : ""
                       } ${isAffected ? "affected" : ""}`}
@@ -447,7 +920,6 @@ export function ForkpointWorkspace() {
                           <time>{formatTime(event.timestamp)}</time>
                         </span>
                         <strong>{eventTitle(event)}</strong>
-                        <small>{eventDetail(event)}</small>
                       </span>
                     </button>
                   );
@@ -459,11 +931,12 @@ export function ForkpointWorkspace() {
               <div className="panel-header graph-header">
                 <div>
                   <span className="panel-kicker">CAUSAL MAP</span>
-                  <h2>Decision graph</h2>
+                  <h2>Causal Branch Map</h2>
                 </div>
                 <div className="legend">
                   <span><i className="legend-neutral" />Evidence</span>
-                  <span><i className="legend-fail" />Failure path</span>
+                  <span><i className="legend-fail" />Failed</span>
+                  <span><i className="legend-corrected" />Corrected</span>
                 </div>
               </div>
               {loading === "analysis" ? (
@@ -473,31 +946,24 @@ export function ForkpointWorkspace() {
                   <span>Locating the earliest unsupported decision…</span>
                 </div>
               ) : analysis ? (
-                <div className="flow-wrap">
-                  <ReactFlow
-                    nodes={graph.nodes}
-                    edges={graph.edges}
-                    fitView
-                    fitViewOptions={{ padding: 0.22 }}
-                    minZoom={0.35}
-                    maxZoom={1.5}
-                    nodesDraggable={false}
-                    nodesConnectable={false}
-                    elementsSelectable
-                    onNodeClick={(_, node) => setSelectedId(node.id)}
-                    proOptions={{ hideAttribution: true }}
+                <div className="graph-analysis-surface">
+                  <div className="flow-wrap">
+                    <DebuggerTreeMap
+                      trace={trace}
+                      analysis={analysis}
+                      selectedId={selectedId}
+                      branchGenerated={branchGenerated}
+                      verification={verification}
+                      onSelect={setSelectedId}
+                    />
+                  </div>
+                  <button
+                    className="replay-shortcut"
+                    onClick={() => document.querySelector(".branch-section")?.scrollIntoView({ behavior: "smooth", block: "start" })}
                   >
-                    <Background color="#2b2e36" gap={24} size={1} />
-                    <Controls showInteractive={false} />
-                  </ReactFlow>
-                  {analysis.firstErrorEventId && (
-                    <button
-                      className="focus-forkpoint"
-                      onClick={() => setSelectedId(analysis.firstErrorEventId)}
-                    >
-                      <CircleDot size={14} /> Focus Forkpoint
-                    </button>
-                  )}
+                    <span><b>Corrected context</b>{correctedAssumption.replace(/\.$/, "")}</span>
+                    <span>{verification?.passed ? "Verification passed" : branchGenerated ? "Run safe verification" : "Generate branch"}<ArrowRight size={14} /></span>
+                  </button>
                 </div>
               ) : (
                 <div className="paid-analysis-gate">
@@ -538,37 +1004,68 @@ export function ForkpointWorkspace() {
               </div>
               {analysis && selectedEvent ? (
                 <div className="inspector-scroll">
-                  <section className={`selected-event-card ${
-                    selectedEvent.id === analysis.firstErrorEventId ? "forkpoint-card" : ""
-                  }`}>
-                    <div className="selected-event-top">
-                      <span className={`type-pill ${eventMeta[selectedEvent.type].className}`}>
-                        {selectedEvent.id === analysis.firstErrorEventId
-                          ? "FORKPOINT"
-                          : eventMeta[selectedEvent.type].label}
-                      </span>
-                      <span className="mono">{selectedEvent.id}</span>
-                    </div>
-                    <h3>{eventTitle(selectedEvent)}</h3>
-                    <p>{eventDetail(selectedEvent)}</p>
-                    {selectedEvent.path && (
-                      <code><FileCode2 size={13} /> {selectedEvent.path}</code>
-                    )}
-                  </section>
+                  {selectedEvent.id !== analysis.firstErrorEventId && (
+                    <section className="selected-event-card">
+                      <div className="selected-event-top">
+                        <span className={`type-pill ${eventMeta[selectedEvent.type].className}`}>
+                          {eventMeta[selectedEvent.type].label}
+                        </span>
+                        <span><span className="mono">{selectedEvent.id}</span><time>{formatTime(selectedEvent.timestamp)}</time></span>
+                      </div>
+                      <h3>{eventTitle(selectedEvent)}</h3>
+                      <p>{eventDetail(selectedEvent)}</p>
+                      {selectedEvent.path && (
+                        <code><FileCode2 size={13} /> {selectedEvent.path}</code>
+                      )}
+                      <div className="selected-event-status">
+                        <span>Causal status</span>
+                        <strong>
+                          {analysis.affectedEventIds.includes(selectedEvent.id)
+                            ? "Downstream impact"
+                            : analysis.supportingEvidenceEventIds.includes(selectedEvent.id)
+                              ? "Supporting evidence"
+                              : "Execution context"}
+                        </strong>
+                      </div>
+                    </section>
+                  )}
 
                   {selectedEvent.id === analysis.firstErrorEventId && (
                     <section className="diagnosis-block">
                       <div className="diagnosis-title">
-                        <AlertTriangle size={16} />
-                        <span>FIRST CAUSAL ERROR</span>
-                        <strong>{Math.round(analysis.confidence * 100)}%</strong>
+                        <span className="diagnosis-node"><span />{selectedEvent.id.replace("event-", "#")}</span>
+                        <span>FORKPOINT</span>
                       </div>
                       <h3>{analysis.firstErrorTitle}</h3>
-                      <p>{analysis.firstErrorExplanation}</p>
+                      <blockquote>“{conciseAssumption(eventDetail(selectedEvent))}”</blockquote>
+                      <dl className="diagnosis-metrics">
+                        <div>
+                          <dt>Assumption support</dt>
+                          <dd>{presentation?.verificationAvailable ? "23%" : selectedEvent.evidence?.length ? `${selectedEvent.evidence.length} cited` : "Low"}</dd>
+                        </div>
+                        <div>
+                          <dt>Diagnosis confidence</dt>
+                          <dd>{Math.round(analysis.confidence * 100)}%</dd>
+                        </div>
+                        <div>
+                          <dt>Downstream impact</dt>
+                          <dd>{analysis.affectedEventIds.length} affected events</dd>
+                        </div>
+                      </dl>
+                      <h4>Why this is the Forkpoint</h4>
+                      <p className={`diagnosis-explanation ${showFullAnalysis ? "is-expanded" : ""}`}>
+                        {analysis.firstErrorExplanation}
+                      </p>
+                      <button
+                        className="inspector-text-button"
+                        onClick={() => setShowFullAnalysis((visible) => !visible)}
+                      >
+                        {showFullAnalysis ? "Show concise analysis" : "Show full analysis"}
+                      </button>
                     </section>
                   )}
 
-                  {analysis.insufficientEvidence && (
+                  {selectedEvent.id === analysis.firstErrorEventId && analysis.insufficientEvidence && (
                     <section className="insufficient-block">
                       <AlertTriangle size={16} />
                       <div>
@@ -578,32 +1075,48 @@ export function ForkpointWorkspace() {
                     </section>
                   )}
 
-                  <section className="evidence-block">
-                    <h3>Trace evidence</h3>
-                    {analysis.supportingEvidenceEventIds.map((id) => {
-                      const event = trace.events.find((item) => item.id === id);
-                      if (!event) return null;
-                      return (
-                        <button key={id} onClick={() => setSelectedId(id)}>
-                          <span className="evidence-icon"><Braces size={14} /></span>
-                          <span><strong>{eventTitle(event)}</strong><small>{id}</small></span>
-                          <ChevronRight size={14} />
-                        </button>
-                      );
-                    })}
-                  </section>
+                  {selectedEvent.id === analysis.firstErrorEventId && (
+                    <>
+                      <section className="evidence-block">
+                        <h3>Evidence</h3>
+                        {(presentation?.verificationAvailable
+                          ? ["event-3", "event-9"]
+                          : analysis.supportingEvidenceEventIds.slice(0, 3)
+                        ).map((id) => {
+                          const event = trace.events.find((item) => item.id === id);
+                          if (!event) return null;
+                          return (
+                            <button key={id} onClick={() => setSelectedId(id)}>
+                              <span className="evidence-icon"><Braces size={14} /></span>
+                              <span><strong>{eventTitle(event)}</strong><small>{id}</small></span>
+                              <ChevronRight size={14} />
+                            </button>
+                          );
+                        })}
+                      </section>
 
-                  <section className="propagation-block">
-                    <h3>Propagation</h3>
-                    <p>{analysis.affectedEventIds.length} downstream events were influenced.</p>
-                    <div className="impact-strip">
-                      {analysis.affectedEventIds.slice(0, 9).map((id) => (
-                        <button key={id} onClick={() => setSelectedId(id)}>
-                          {id.replace("event-", "")}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
+                      <section className="propagation-block">
+                        <div className="propagation-summary">
+                          <div><h3>Propagation</h3><p>{analysis.affectedEventIds.length} affected events</p></div>
+                          <button
+                            className="inspector-text-button"
+                            onClick={() => setShowAffectedEvents((visible) => !visible)}
+                          >
+                            {showAffectedEvents ? "Hide affected events" : "View affected events"}
+                          </button>
+                        </div>
+                        {showAffectedEvents && (
+                          <div className="impact-strip">
+                            {analysis.affectedEventIds.slice(0, 9).map((id) => (
+                              <button key={id} onClick={() => setSelectedId(id)}>
+                                {id.replace("event-", "")}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="loading-state compact">
@@ -616,6 +1129,7 @@ export function ForkpointWorkspace() {
           </section>
 
           {analysis && (
+            <div className="branch-section-shell">
             <section className="branch-section">
               <div className="branch-heading">
                 <div>
@@ -728,6 +1242,7 @@ export function ForkpointWorkspace() {
                 </div>
               )}
             </section>
+            </div>
           )}
         </>
       )}
