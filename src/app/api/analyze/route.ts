@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { APIConnectionError, APIConnectionTimeoutError, APIError } from "openai";
 import { ZodError } from "zod";
 import { analyzeTrace } from "@/lib/analysis";
+import { demoAnalysis, isBuiltInDemoTrace } from "@/lib/demo";
 import { normalizeTrace } from "@/lib/schema";
 
 const MAX_BYTES = 300_000;
@@ -93,7 +94,26 @@ export async function POST(request: Request) {
     if (Buffer.byteLength(raw, "utf8") > MAX_BYTES) {
       return NextResponse.json({ error: "Trace exceeds the 300 KB limit." }, { status: 413 });
     }
-    const trace = normalizeTrace(JSON.parse(raw));
+    const body: unknown = JSON.parse(raw);
+    const isEnvelope = Boolean(body && typeof body === "object" && "trace" in body);
+    const trace = normalizeTrace(
+      isEnvelope ? (body as { trace: unknown }).trace : body,
+    );
+
+    if (isBuiltInDemoTrace(trace)) {
+      return NextResponse.json({ analysis: demoAnalysis, mode: "demo" as const });
+    }
+
+    if (
+      !isEnvelope ||
+      (body as { confirmPaidApiUsage?: unknown }).confirmPaidApiUsage !== true
+    ) {
+      return NextResponse.json(
+        { error: "Explicit confirmation is required before using paid GPT analysis." },
+        { status: 403 },
+      );
+    }
+
     return NextResponse.json(await analyzeTrace(trace));
   } catch (error) {
     console.error("[Forkpoint /api/analyze]", JSON.stringify(safeErrorMetadata(error)));

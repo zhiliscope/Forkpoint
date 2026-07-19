@@ -29,7 +29,8 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { demoTrace } from "@/lib/demo";
+import { demoTrace, isBuiltInDemoTrace } from "@/lib/demo";
+import { requestPaidAnalysis } from "@/lib/paid-analysis-client";
 import {
   normalizeTrace,
   type AgentTrace,
@@ -37,6 +38,7 @@ import {
   type TraceEvent,
 } from "@/lib/schema";
 import { getTracePresentation } from "@/lib/trace-presentation";
+import { getLocalDeterministicAnalysis } from "@/lib/trace-analysis-policy";
 
 type AnalysisMode = "demo" | "gpt";
 type Verification = {
@@ -218,6 +220,7 @@ export function ForkpointWorkspace() {
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [paidCreditsConfirmed, setPaidCreditsConfirmed] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const selectedEvent = trace?.events.find((event) => event.id === selectedId) ?? null;
@@ -233,34 +236,44 @@ export function ForkpointWorkspace() {
     [trace, analysis, selectedId],
   );
 
-  const analyze = useCallback(async (nextTrace: AgentTrace) => {
+  const loadTraceLocally = useCallback((nextTrace: AgentTrace) => {
+    const localAnalysis = getLocalDeterministicAnalysis(nextTrace);
     setTrace(nextTrace);
-    setAnalysis(null);
+    setAnalysis(localAnalysis);
+    setMode(localAnalysis ? "demo" : null);
     setVerification(null);
-    setBranchPlan([]);
+    setBranchPlan(localAnalysis?.alternativePlan ?? []);
+    setError(null);
+    setLoading(null);
+    setPaidCreditsConfirmed(false);
+    setCorrectedAssumption(localAnalysis?.correctedAssumption ?? "");
+    setSelectedId(
+      localAnalysis?.firstErrorEventId || nextTrace.events[0]?.id || null,
+    );
+  }, []);
+
+  const runGptAnalysis = useCallback(async () => {
+    if (!trace || isBuiltInDemoTrace(trace) || !paidCreditsConfirmed || loading !== null) {
+      return;
+    }
+
     setError(null);
     setLoading("analysis");
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nextTrace),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Analysis failed.");
+      const payload = await requestPaidAnalysis(trace);
       setAnalysis(payload.analysis);
       setMode(payload.mode);
       setCorrectedAssumption(payload.analysis.correctedAssumption);
       setBranchPlan(payload.analysis.alternativePlan);
       setSelectedId(
-        payload.analysis.firstErrorEventId || nextTrace.events[0]?.id || null,
+        payload.analysis.firstErrorEventId || trace.events[0]?.id || null,
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis failed.");
     } finally {
       setLoading(null);
     }
-  }, []);
+  }, [loading, paidCreditsConfirmed, trace]);
 
   async function loadFile(file: File) {
     setError(null);
@@ -274,7 +287,7 @@ export function ForkpointWorkspace() {
     }
     try {
       const parsed = JSON.parse(await file.text());
-      await analyze(normalizeTrace(parsed));
+      loadTraceLocally(normalizeTrace(parsed));
     } catch (caught) {
       setError(
         caught instanceof Error ? `Trace validation failed: ${caught.message}` : "Invalid trace.",
@@ -282,25 +295,10 @@ export function ForkpointWorkspace() {
     }
   }
 
-  async function generateBranch() {
-    if (!trace) return;
-    setLoading("branch");
+  function generateBranch() {
+    if (!trace || !analysis || branchPlan.length === 0) return;
     setError(null);
     setVerification(null);
-    try {
-      const response = await fetch("/api/branch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trace, correctedAssumption }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Branch generation failed.");
-      setBranchPlan(payload.plan);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Branch generation failed.");
-    } finally {
-      setLoading(null);
-    }
   }
 
   async function runVerification() {
@@ -332,6 +330,7 @@ export function ForkpointWorkspace() {
     setBranchPlan([]);
     setVerification(null);
     setError(null);
+    setPaidCreditsConfirmed(false);
   }
 
   return (
@@ -384,7 +383,7 @@ export function ForkpointWorkspace() {
             corrected branch.
           </p>
           <div className="empty-actions">
-            <button className="primary-button" onClick={() => analyze(demoTrace)}>
+            <button className="primary-button" onClick={() => loadTraceLocally(demoTrace)}>
               <Play size={16} fill="currentColor" />
               Load built-in investigation
             </button>
@@ -501,10 +500,31 @@ export function ForkpointWorkspace() {
                   )}
                 </div>
               ) : (
-                <div className="loading-state">
-                  <AlertTriangle size={24} />
-                  <strong>Analysis unavailable</strong>
-                  <span>Resolve the trace or API error and try again.</span>
+                <div className="paid-analysis-gate">
+                  <div className="paid-analysis-copy">
+                    <Sparkles size={24} />
+                    <strong>Custom trace loaded — no analysis has run</strong>
+                    <span>
+                      Running GPT analysis sends this trace to the configured OpenAI API and uses paid API credits.
+                      Importing, refreshing, and viewing the trace never starts this request.
+                    </span>
+                  </div>
+                  <label className="paid-analysis-confirmation">
+                    <input
+                      type="checkbox"
+                      checked={paidCreditsConfirmed}
+                      onChange={(event) => setPaidCreditsConfirmed(event.target.checked)}
+                    />
+                    <span>I understand this action uses paid API credits.</span>
+                  </label>
+                  <button
+                    className="primary-button"
+                    onClick={() => void runGptAnalysis()}
+                    disabled={!paidCreditsConfirmed || loading !== null}
+                  >
+                    <Sparkles size={16} />
+                    Run GPT analysis
+                  </button>
                 </div>
               )}
             </section>
@@ -620,7 +640,7 @@ export function ForkpointWorkspace() {
                   onClick={generateBranch}
                   disabled={loading !== null || correctedAssumption.trim().length < 3}
                 >
-                  {loading === "branch" ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+                  <Sparkles size={16} />
                   Generate branch
                 </button>
                 <button

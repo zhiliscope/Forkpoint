@@ -332,6 +332,15 @@ button { color: inherit; }
 .loading-state strong { color: #c9ccd2; font-size: 12px; }
 .loading-state span { font-size: 10px; }
 .loading-state.compact { height: calc(100% - 66px); }
+.paid-analysis-gate { height: calc(100% - 66px); max-width: 440px; margin: 0 auto; padding: 36px; display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 18px; color: #a3a8b2; }
+.paid-analysis-copy { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.paid-analysis-copy svg { color: #9b8cff; }
+.paid-analysis-copy strong { color: #f2f3f5; font-size: 14px; }
+.paid-analysis-copy span { font-size: 11px; line-height: 1.6; }
+.paid-analysis-confirmation { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid #343842; border-radius: 7px; background: #17191e; color: #c9ccd2; font-size: 11px; line-height: 1.4; cursor: pointer; }
+.paid-analysis-confirmation input { margin-top: 1px; accent-color: #8b7cff; }
+.paid-analysis-gate .primary-button { align-self: center; }
+.paid-analysis-gate .primary-button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
