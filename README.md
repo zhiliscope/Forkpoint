@@ -9,6 +9,7 @@ assumption, explains how that decision propagated through later tool calls and
 file changes, and creates a corrected branch from that point.
 
 **Hackathon category:** Developer Tools<br />
+**Live demo:** [https://forkpoint-beta.vercel.app](https://forkpoint-beta.vercel.app)<br />
 **Repository:** [github.com/zhiliscope/Forkpoint](https://github.com/zhiliscope/Forkpoint)<br />
 **License:** [MIT](LICENSE)
 
@@ -37,6 +38,10 @@ Forkpoint converts a trace into a causal investigation:
    allowlisted change in an isolated fixture and show the real result.
 
 ## Judge quick start
+
+Open the public demo: [https://forkpoint-beta.vercel.app](https://forkpoint-beta.vercel.app)
+
+### Run locally
 
 Requirements:
 
